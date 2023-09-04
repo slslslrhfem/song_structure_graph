@@ -1,4 +1,4 @@
-# song_structure_graph
+# Combinatorial Music generation model with song structure graph analysis
 
 
 For training from scratch..
@@ -27,4 +27,4 @@ simple explanation for each part is in main.py. note that you should change chec
 
 Note that folder "datasets" from various site, to get genre label for musics.
 
-This github link will be updated soon.
+This github now on updating..
