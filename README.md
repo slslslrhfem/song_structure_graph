@@ -8,8 +8,8 @@ For training from scratch..
 2. download lmd_full dataset in https://colinraffel.com/projects/lmd/, make root as pattern_representation/dataset/lmd_full...
 
 3. run following commands..
-
-
+   
+```
     python main.py dataset_conformity
     python main.py process_CBIR
     python main.py train_CBIR
@@ -20,6 +20,7 @@ For training from scratch..
     python main.py preprocess_unet
     python main.py train_unet
     python main.py generate_music
+```
 
 simple explanation for each part is in main.py. note that you should change checkpoint loading in some codes..!
 (especially, preprocess_npz, preprocess_unet, generate_music...)
