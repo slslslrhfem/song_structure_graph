@@ -11,7 +11,6 @@ import pytorch_lightning as pl
 from hyperparameter import Hyperparameter as hp
 from pytorch_lightning.loggers import WandbLogger
 from utils import pypianoroll_to_CONLON, get_conlon_tensor, np_tensor_decoder, np_tensor_encoder
-from resnet import resnet18
 from pytorch_lightning.callbacks import ModelCheckpoint
 from torch.utils.data import Subset
 from tqdm import tqdm

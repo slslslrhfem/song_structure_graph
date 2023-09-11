@@ -326,34 +326,6 @@ class AE(pl.LightningModule):
               2 * reg_weight * priorz_z__kernel.mean()
         return mmd
     
-class ChamferLoss(nn.Module):
-
-    def __init__(self):
-        super(ChamferLoss, self).__init__()
-        self.use_cuda = torch.cuda.is_available()
-
-    def forward(self, preds, gts):
-        P = self.batch_pairwise_dist(gts, preds)
-        mins, _ = torch.min(P, 1)
-        loss_1 = torch.sum(mins)
-        mins, _ = torch.min(P, 2)
-        loss_2 = torch.sum(mins)
-
-        return loss_1 + loss_2
-
-    def batch_pairwise_dist(self, x, y):
-        x=x.float()
-        y=y.float()
-        bs, num_points_x, points_dim = x.size()
-        _, num_points_y, _ = y.size()
-        xx = x.pow(2).sum(dim=-1)
-        yy = y.pow(2).sum(dim=-1)
-        zz = torch.bmm(x, y.transpose(2, 1))
-        rx = xx.unsqueeze(1).expand_as(zz.transpose(2, 1))
-        ry = yy.unsqueeze(1).expand_as(zz)
-        P = (rx.transpose(2, 1) + ry - 2 * zz)
-        return P
-
 def train_AE():
     dataset = AE_dataset()
     train_len = int(len(dataset) * 0.9)
