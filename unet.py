@@ -42,7 +42,10 @@ import wandb
 
 class Graph_Dataset(dgl.data.DGLDataset):
     def __init__(self):
-        ROOT = Path("processed_pattern_with_order/conformed_lpd_17/lpd_17_cleansed")
+        if hp.inst_num==17:
+            ROOT = Path("processed_pattern_with_order_17/conformed_lpd_17/lpd_17_cleansed")
+        else:
+            ROOT = Path("processed_pattern_with_order_5/conformed_lpd_5/lpd_5_cleansed")
         self.files = sorted(ROOT.glob('[A-Z]/[A-Z]/[A-Z]/TR*/*.bin'))
 
     def __getitem__(self,index):   
@@ -58,8 +61,14 @@ class Graph_Dataset(dgl.data.DGLDataset):
 
 def preprocess_unet():
     dataset = Graph_Dataset()
-    graph_encoder = graph_emb_classifier(hp.GEM_input_dim, 512, 256, 17)
-    checkpoint = torch.load("graph_checkpoints/no_bn_2layer_graph_posenc-epoch=40-acc=0.33-val_mask_loss=1.03-val_loss=1.36.ckpt")
+    graph_encoder = graph_emb_classifier(hp.GEM_input_dim, 512, hp.AE_embedding_dim, 19)
+    if hp.inst_num==17:
+        folder_path = 'graph_checkpoints_17'
+    else:
+        folder_path = 'graph_checkpoints_5'
+    best_checkpoint, lowest_val_mask_loss = find_lowest_val_mask_loss_checkpoint(folder_path)
+    print(best_checkpoint)
+    checkpoint = torch.load(os.path.join(folder_path, best_checkpoint))
     graph_encoder.load_state_dict(checkpoint["state_dict"])
     dataloader = GraphDataLoader(
         dataset,
@@ -97,16 +106,27 @@ def preprocess_unet():
         efeat = masked_graph.edata['edge_feature']
         node_representation, _ = graph_encoder(masked_graph, feature, efeat) # get node_representation from masked_graph
         
-        
-        for i, idx in enumerate(masked_idx):
-            pair = [node_representation[idx].detach().numpy(), conlon_latent[i].detach().numpy()]#representation of masked pattern and its CONLON latent pair
-            with open('processed_pattern_unet/'+str(file_num)+".pkl","wb") as f:
-                pickle.dump(pair, f)
-            file_num+=1
+        if hp.inst_num==17:
+            os.makedirs('processed_pattern_unet_17/', exist_ok=True)
+            for i, idx in enumerate(masked_idx):
+                pair = [node_representation[idx].detach().numpy(), conlon_latent[i].detach().numpy()]#representation of masked pattern and its CONLON latent pair
+                with open('processed_pattern_unet_17/'+str(file_num)+".pkl","wb") as f:
+                    pickle.dump(pair, f)
+                file_num+=1
+        else:
+            os.makedirs('processed_pattern_unet_5/', exist_ok=True)
+            for i, idx in enumerate(masked_idx):
+                pair = [node_representation[idx].detach().numpy(), conlon_latent[i].detach().numpy()]#representation of masked pattern and its CONLON latent pair
+                with open('processed_pattern_unet_5/'+str(file_num)+".pkl","wb") as f:
+                    pickle.dump(pair, f)
+                file_num+=1
 
 class unet_Dataset(dgl.data.DGLDataset):
     def __init__(self):
-        ROOT = Path("processed_pattern_unet")
+        if hp.inst_num==17:
+            ROOT = Path("processed_pattern_unet_17")
+        else:
+            ROOT = Path("processed_pattern_unet_5")
         self.files = sorted(ROOT.glob('*.pkl'))
 
     def __getitem__(self,index):   
@@ -116,7 +136,6 @@ class unet_Dataset(dgl.data.DGLDataset):
     
     def __len__(self):
         return len(self.files)
-
 
 
 
@@ -151,7 +170,7 @@ class Unet(pl.LightningModule):
         CONLON_pred = self.forward(graph_latent)
         loss = self.loss_fn(CONLON_pred, CONLON_latent)
         
-        self.log('val_loss', loss)
+        self.log('val_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
 
     def configure_optimizers(self):
@@ -173,9 +192,12 @@ def train_unet():
                           batch_size = 256,
                         drop_last=True,num_workers=12)
     wandb_logger = WandbLogger()
-    checkpoint_callback = ModelCheckpoint(dirpath = 'Unet_checkpoints/', save_top_k = 10, filename='unet_{epoch:02d}_{val_loss:.2f}', monitor="val_loss")
+    if hp.inst_num==17:
+        checkpoint_callback = ModelCheckpoint(dirpath = 'checkpoints/Unet_checkpoints_17/', save_top_k = 10, filename='unet_{epoch:02d}_{val_loss:.5f}', monitor="val_loss")
+    else:
+        checkpoint_callback = ModelCheckpoint(dirpath = 'checkpoints/Unet_checkpoints_5/', save_top_k = 10, filename='unet_{epoch:02d}_{val_loss:.5f}', monitor="val_loss")
     trainer = pl.Trainer(logger = wandb_logger, accelerator='auto', devices=1 if torch.cuda.is_available() else None,
-                          max_epochs=100,detect_anomaly=True,callbacks=[checkpoint_callback])
+                          max_epochs=20,detect_anomaly=True,callbacks=[checkpoint_callback])
     trainer.fit(unet, train_loader, valid_loader)
 
 

@@ -17,14 +17,17 @@ from torch.utils.data import Subset
 from tqdm import tqdm
 from AE import AE, Encoder_AE
 import copy
+from functools import partial
 
 import random
 
 class GraphDataset(dgl.data.DGLDataset):
     def __init__(self):
-        ROOT = Path("processed_pattern_with_order/conformed_lpd_17/lpd_17_cleansed")
+        if hp.inst_num==17:
+            ROOT = Path("processed_pattern_with_order_17/conformed_lpd_17/lpd_17_cleansed")
+        else:
+            ROOT = Path("processed_pattern_with_order_5/conformed_lpd_5/lpd_5_cleansed")
         self.files = sorted(ROOT.glob('[A-Z]/[A-Z]/[A-Z]/TR*/*.bin'))
-        self.graph_list = []
 
         # Data object is from PYG, It can be replaced with DGL.graph object in the same way. 
         # However, when N is large, this will case OOM.
@@ -44,7 +47,6 @@ class GraphDataset(dgl.data.DGLDataset):
 
 def train_graph2vec():
     dataset = GraphDataset()
-
     """
     label_num = [0 for i in range(17)]
     for data in tqdm(dataset):
@@ -58,48 +60,52 @@ def train_graph2vec():
     validation_size = len(dataset)-train_size
     train_dataset = Subset(dataset,range(train_size))
     validation_dataset = Subset(dataset,range(train_size, train_size + validation_size))# use non-random split for test generation quality
-    train_loader = GraphDataLoader(train_dataset, batch_size=hp.GEM_batch_size, shuffle=True,num_workers=15)#, collate_fn=_collate_fn)
-    valid_loader = GraphDataLoader(validation_dataset, batch_size=32, shuffle=False,num_workers=15)#, collate_fn=_collate_fn)
-    classifier_model = graph_emb_classifier(hp.GEM_input_dim, 512, 256, 17) #input_dim = (emb_dim of resnet)+24(key)+17(instrument)
+
+    train_loader = GraphDataLoader(train_dataset, batch_size=hp.GEM_batch_size, shuffle=True,num_workers=5)#, collate_fn=_collate_fn)
+    valid_loader = GraphDataLoader(validation_dataset, batch_size=4, shuffle=False,num_workers=5)#, collate_fn=_collate_fn)
+    classifier_model = graph_emb_classifier(hp.GEM_input_dim, 512, hp.AE_embedding_dim, 19)
    
     wandb_logger = WandbLogger()
-    checkpoint_callback = ModelCheckpoint(dirpath = 'graph_checkpoints/', save_top_k = 10, filename='no_bn_2layer_graph_posenc-{epoch:02d}-{acc:.2f}-{val_mask_loss:.2f}-{val_loss:.2f}', monitor="val_loss")
-    trainer = pl.Trainer(logger = wandb_logger, accelerator='auto', devices=1 if torch.cuda.is_available() else None,
-                          max_epochs=300,detect_anomaly=True,callbacks=[checkpoint_callback])
+    if hp.inst_num==17:
+        checkpoint_callback = ModelCheckpoint(dirpath = 'checkpoints/graph_checkpoints_17/', save_top_k = 10, filename='graph-{epoch:02d}-{val_mask_loss:.4f}-{val_loss:.4f}', monitor="val_loss")
+    else:
+        checkpoint_callback = ModelCheckpoint(dirpath = 'checkpoints/graph_checkpoints_5/', save_top_k = 10, filename='graph-{epoch:02d}-{val_mask_loss:.4f}-{val_loss:.4f}', monitor="val_loss")
+    trainer = pl.Trainer(logger = wandb_logger, accelerator='cpu', devices=1 if torch.cuda.is_available() else None,
+                          max_epochs=2000,detect_anomaly=True,callbacks=[checkpoint_callback]) 
     trainer.fit(classifier_model, train_loader, valid_loader)
     return 0
 
 class graph_emb_classifier(pl.LightningModule):
     def __init__(self, in_dim, hidden_dim, embedding_dimension,n_classes):
         super(graph_emb_classifier, self).__init__()
-        self.inst_emb = nn.Embedding(17,128)
-        self.key_emb = nn.Embedding(24,128)
-        self.position_emb = nn.Embedding(64, 256)
+        self.inst_emb = nn.Embedding(hp.inst_num, embedding_dimension//2)
+        self.key_emb = nn.Embedding(24, embedding_dimension//2)
+        self.position_emb = nn.Embedding(128, 256)
         #self.efeat_linear = nn.Linear(4,hp.GEM_input_dim)# need for GINEConv
-        self.image_bn = nn.BatchNorm1d(256)
+        self.image_bn = nn.BatchNorm1d(hp.AE_embedding_dim)
+        self.conlon_bn = nn.BatchNorm1d(hp.AE_embedding_dim)
         #self.resnet = resnet18()
-        self.conv1 = dglnn.RelGraphConv(in_dim, hidden_dim, 4,regularizer='basis', num_bases=2)
+        self.conv1 = dglnn.RelGraphConv(in_dim, hidden_dim, 4, num_bases=4)
         self.bn1 = nn.BatchNorm1d(hidden_dim)
-        self.conv2 = dglnn.RelGraphConv(hidden_dim, hidden_dim, 4,regularizer='basis', num_bases=2)
+        self.conv2 = dglnn.RelGraphConv(hidden_dim, hidden_dim, 4,num_bases=4)
         self.bn2 = nn.BatchNorm1d(hidden_dim)
         self.embedding = nn.Linear(hidden_dim, embedding_dimension)
-        self.embedding_bn = nn.BatchNorm1d(embedding_dimension)
+        #self.embedding = dglnn.RelGraphConv(hidden_dim, embedding_dimension, 4, num_bases=4)#activation=partial(F.softmax, dim=1))
+        #self.embedding_bn = nn.BatchNorm1d(embedding_dimension)
         self.classify = nn.Linear(embedding_dimension, n_classes)
         self.transform_edge = dgl.DropEdge(p=0.3)
         self.transform_node = dgl.DropNode(p=0.3)
         #self.batch_norm = nn.BatchNorm2d(n_classes)
-        self.class_weight=[0.11804364,0.03585746, 0.21315426, 0.13387889, 0.01163048, 0.10536832,
- 0.01539799, 0.01503192, 0.05765667, 0.02016967, 0.04941746, 0.00587244,
- 0.00528774, 0.01708854, 0.0083714,  0.02025864, 0.16751448]
+        self.class_weight=[0.10694549, 0.03150136, 0.19173273, 0.11884681, 0.01055109, 0.09231478,
+ 0.01340586, 0.01327084, 0.05172588, 0.01827875, 0.0451845,  0.00540816,
+ 0.0047017,  0.01478502, 0.00703567, 0.01824981, 0.14966582, 0.03171113, 0.07468462]
         
     def forward(self, g, h, efeat):
         # Apply graph convolution and activation.zx
-        h = self.bn1(F.relu(self.conv1(g, h, efeat)))
-        h = self.bn2(F.relu(self.conv2(g, h, efeat)))
-        h = self.embedding(h)
+        h = F.relu(self.bn1(self.conv1(g, h, efeat)))
+        h = F.relu(self.bn2(self.conv2(g, h, efeat)))
+        h = self.embedding(h)#(g, h, efeat)
         embedding = h
-        h = self.embedding_bn(h)
-        
         with g.local_scope():
             g.ndata['h'] = h
             # Calculate graph representation by average readout.
@@ -113,7 +119,7 @@ class graph_emb_classifier(pl.LightningModule):
         mask_idx = np.random.choice(len(graph.ndata['CONLON']), int(0.3*len(graph.ndata['CONLON'])))
         target = copy.deepcopy(graph.ndata['CONLON'][mask_idx])
         for idx in mask_idx:
-            graph.ndata['CONLON'][idx] = torch.zeros_like(graph.ndata['CONLON'][idx]) # this All zero tensor is CONLON latent tensor, not encoder(zero CONLON).
+            graph.ndata['CONLON'][idx] = torch.zeros_like(graph.ndata['CONLON'][idx]) # Note that this All zero tensor is used for CONLON latent tensor, not encoder(empty CONLON).
 
         masked_graph = graph
         
@@ -126,7 +132,7 @@ class graph_emb_classifier(pl.LightningModule):
         #inst_emb = self.instrument_embedding(inst)
         #key_emb = self.key_label_embedding(key)
         class_feature = self.image_bn(fix_class) # this is node feature, but always given for training & inference
-        img_feature = self.image_bn(img_feature) # this is node feature, but partially masked for training, and generated from scratch autoregressively in inference.
+        img_feature = self.conlon_bn(img_feature) # this is node feature, but partially masked for training, and generated from scratch autoregressively in inference.
 
         feature = class_feature + img_feature # this is node feature, adding fixed feature and partially masked feature
         position_emb = self.position_emb(masked_graph.ndata['pattern_order'])   #this is position of node feature.
@@ -134,11 +140,11 @@ class graph_emb_classifier(pl.LightningModule):
         efeat = masked_graph.edata['edge_feature']
         #efeat = self.efeat_linear(efeat.to(torch.float32))
         embedding, logits = self(masked_graph, feature, efeat)
-        one_shot_labels = F.one_hot(labels[0], num_classes=17).to(torch.float32)
-        classification_loss = F.cross_entropy(logits, one_shot_labels,weight=torch.tensor(self.class_weight).cuda())#)
+        one_shot_labels = F.one_hot(labels[0], num_classes=19).to(torch.float32)
+        classification_loss = F.cross_entropy(logits, one_shot_labels,weight=torch.tensor(self.class_weight))#)
         
         masking_prediction_loss = F.mse_loss(embedding[mask_idx], target) # 
-        loss =  masking_prediction_loss + classification_loss
+        loss = classification_loss + masking_prediction_loss
         pred = logits.argmax(1)
         acc = (pred==labels[0]).float().mean()
         metrics = {'acc': acc, 'cls' : classification_loss,'mask' : masking_prediction_loss} 
@@ -161,7 +167,7 @@ class graph_emb_classifier(pl.LightningModule):
         fix_class = torch.cat([inst,key],dim=1).to(torch.float32)
         #print(inst.shape, img_feature.shape)
         class_feature = self.image_bn(fix_class)
-        img_feature = self.image_bn(img_feature) #normalize
+        img_feature = self.conlon_bn(img_feature) #normalize
 
 
         feature = class_feature + img_feature#torch.cat([inst,key,img_feature], dim=1).to(torch.float32)
@@ -170,10 +176,10 @@ class graph_emb_classifier(pl.LightningModule):
         efeat = masked_graph.edata['edge_feature']
         #efeat = self.efeat_linear(efeat.to(torch.float32)) #need if use GINEConv
         embedding, logits = self(masked_graph, feature, efeat)
-        one_shot_labels = F.one_hot(labels[0], num_classes=17).to(torch.float32)
-        classification_loss = F.cross_entropy(logits, one_shot_labels,weight=torch.tensor(self.class_weight).cuda())#)
+        one_shot_labels = F.one_hot(labels[0], num_classes=19).to(torch.float32)
+        classification_loss = F.cross_entropy(logits, one_shot_labels,weight=torch.tensor(self.class_weight))#)
         masking_prediction_loss = F.mse_loss(embedding[mask_idx], target) #
-        loss = masking_prediction_loss + classification_loss
+        loss = classification_loss + masking_prediction_loss
         pred = logits.argmax(1)
         acc = (pred==labels[0]).float().mean()
         self.log('val_cls_loss',classification_loss)

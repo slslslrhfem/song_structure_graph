@@ -13,7 +13,7 @@ from pattern_classes import pattern
 from hyperparameter import Hyperparameter as hp
 import torch
 from numba import njit
-from Bar_CBIR import Encoder, Decoder, Discriminator
+from Bar_CBIR import Encoder, Decoder, Discriminator, wasserstein_VAE
 from utils import pypianoroll_to_CONLON, np_tensor_encoder, np_tensor_decoder, get_meta
 from scipy.signal import argrelextrema
 import dgl
@@ -21,53 +21,81 @@ import cv2
 import gc
 from AE import AE
 import re
-
+from functools import partial
+import parmap
+import multiprocessing as mp
+from utils import CBIR_checkpoint_path, find_best_checkpoint
  
 def preprocess_npz(root, graph=True):
     error_count=0
     ROOT = Path(root)
+    device = torch.device('cuda')
     files = sorted(ROOT.glob('[A-Z]/[A-Z]/[A-Z]/TR*/*.npz'))
-    encoder, decoder, discriminator = Encoder(hp,128,96), Decoder(hp,128,96), Discriminator(hp) # use only encoder for inference
-    encoder.load_state_dict(torch.load("models/encoder20dim_h64latent32chan34.h5"))
+    wae = wasserstein_VAE(128,48)
+    if hp.inst_num==17:
+        CBIR_checkpoint_dir = "CBIR_checkpoints_17/"
+        ae_checkpoint_dir = "ae_checkpoints_17/"
+    else:
+        CBIR_checkpoint_dir = "CBIR_checkpoints_5/"
+        ae_checkpoint_dir = "ae_checkpoints_5/"
+    CBIR_checkpoint = CBIR_checkpoint_path(CBIR_checkpoint_dir)
+    checkpoint = torch.load("CBIR_checkpoints_17/epoch=07-recon_loss=1.048136-check.ckpt")
+    wae.load_state_dict(checkpoint["state_dict"])
+    encoder = wae.encoder
     encoder.eval()
 
-    inst_list = ['Drums', 'Piano', 'Chromatic Percussion', 'Organ', 'Guitar', 'Bass', 'Strings', 'Ensemble', 'Brass', 'Reed', 'Pipe', 'Synth Lead', 'Synth Pad', 'Synth Effects', 'Ethnic', 'Percussive', 'Sound Effects']
-    genre_list = ['country', 'piano', 'rock', 'pop', 'folk', 'electronic', 'rap', 'chill', 'dance', 'jazz', 'rnb', 'reggae', 'house', 'techno', 'trance', 'metal', 'pop_rock']
+    # 체크포인트 디렉토리 설정
+    best_checkpoint_path = find_best_checkpoint(ae_checkpoint_dir)
+    print("best,", best_checkpoint_path)
+
+    if hp.inst_num==17:
+        inst_list = ['Drums', 'Piano', 'Chromatic Percussion', 'Organ', 'Guitar', 'Bass', 'Strings', 'Ensemble', 'Brass', 'Reed', 'Pipe', 'Synth Lead', 'Synth Pad', 'Synth Effects', 'Ethnic', 'Percussive', 'Sound Effects']
+    else:
+        inst_list = ['Drums', 'Piano', 'Guitar', 'Bass', 'Strings']
+    genre_list = ['country', 'piano', 'rock', 'pop', 'folk', 'electronic', 'rap', 'chill', 'dance', 'jazz', 'rnb', 'reggae', 'house', 'techno', 'trance', 'metal', 'pop_rock','latin', 'catchy']
     graph_list=[]
     with open('datasets/genre.pickle', 'rb') as f:
         genre_dict = pickle.load(f)
-    for file in tqdm(files): 
-        #print(file)
-        filename = "processed_pattern_with_order/"+str(file)[:-4]+".bin"
-        pianoroll = pypianoroll.load(file)
-        #pypianoroll.write("test.midi",pianoroll)
-        CONLON = pypianoroll_to_CONLON(pianoroll)
-        start_timings, SMM_CBIR = CONLON_to_starttiming(CONLON,encoder)
-        #print(start_timings, "this is start_timing for first track, filename is ", filename)
-        key_number, key_timing, genre = get_meta(file,genre_dict)
-        patterns = CONLON_to_patterns(CONLON,inst_list, key_number, key_timing, genre, start_timings = start_timings)
-        if graph:
-            try: # dgl._ffi.base.DGLError: Expect number of features to match number of nodes (len(u)). Got 207 and 206 instead. for only one case. I don't know why this happens..
-                pattern_graph = patterns_to_pattern_graph(patterns,CONLON, SMM_CBIR,inst_list,genre_list)
-                save_graph(pattern_graph, filename, True)
-
-            except Exception as e:
-                print(e)
-        else: 
-            save_pattern_image(patterns,filename)
-        del filename, pianoroll, CONLON, start_timings, SMM_CBIR, patterns
-        gc.collect()
-        
+    
+    if graph:
+        for file in tqdm(files):
+            npz_process(file, encoder, genre_dict, genre_list, inst_list, graph, best_checkpoint_path)
+    else:
+        parmap.map(partial(npz_process, encoder=encoder, genre_dict=genre_dict, genre_list=genre_list, inst_list=inst_list, graph=graph, device=device), files, pm_pbar=True, pm_processes=int(mp.cpu_count()/2))
+    #multiprocess with GPU is not good idea, and we use GPU when constructing graph.
     return 0
 
-
-
+def npz_process(file, encoder, genre_dict, genre_list, inst_list, graph, best_checkpoint_path):
+    if hp.inst_num==17:
+        filename = "processed_pattern_with_order_17/"+str(file)[:-4]+".bin"
+    else:
+        filename = "processed_pattern_with_order_5/"+str(file)[:-4]+".bin"
+    pianoroll = pypianoroll.load(file)
+    #pypianoroll.write("test.midi",pianoroll)
+    CONLON = pypianoroll_to_CONLON(pianoroll)
+    start_timings, SMM_CBIR = CONLON_to_starttiming(CONLON,encoder)
+    #print(start_timings, "this is start_timing for first track, filename is ", filename)
+    key_number, key_timing, genre = get_meta(file,genre_dict)
+    patterns = CONLON_to_patterns(CONLON,inst_list, key_number, key_timing, genre, start_timings = start_timings)
+    
+    if graph:
+        try: # dgl._ffi.base.DGLError: Expect number of features to match number of nodes (len(u)). Got k and k-1 instead. for some case. there is some case that returns node feature's shape not correctly. 
+            pattern_graph = patterns_to_pattern_graph(patterns,CONLON, SMM_CBIR,inst_list,genre_list, best_checkpoint_path)
+            save_graph(pattern_graph, filename, True)
+        except Exception as e:
+            print(e)
+    else: 
+        #save_pattern_midi(patterns,filename) # For training REMI DAAE
+        save_pattern_image(patterns,filename) # For training CONLON AE
+    del filename, pianoroll, CONLON, start_timings, SMM_CBIR, patterns
+    gc.collect()
 
 def save_pattern_image(patterns,filename):
     for i,np_dict in enumerate(patterns):
-        if len(np_dict.CONLON[0])>0: # empty tensor can occur nan loss
-            os.makedirs(os.path.dirname("pattern_conlon_image/"+str(os.path.basename(filename))[:-4]+'/'+str(i).zfill(4)), exist_ok=True)
-            np.save("pattern_conlon_image/"+str(os.path.basename(filename))[:-4]+'/'+str(i).zfill(4), np_dict.CONLON)
+        if len(np_dict.CONLON[0])>0: # empty tensor
+            #if np_dict.inst != 'Drums':
+            os.makedirs(os.path.dirname("pattern_conlon_image_5/"+str(os.path.basename(filename))[:-4]+'/'+str(i).zfill(4)), exist_ok=True)
+            np.save("pattern_conlon_image_5/"+str(os.path.basename(filename))[:-4]+'/'+str(i).zfill(4), np_dict.CONLON)
 
 
 def save_graph(pattern_graph, filename, save_pattern_image=False):
@@ -84,7 +112,8 @@ def save_graph(pattern_graph, filename, save_pattern_image=False):
     """
 
 
-def patterns_to_pattern_graph(patterns, CONLON,CBIR,inst_list,genre_list):
+
+def patterns_to_pattern_graph(patterns, CONLON,CBIR,inst_list,genre_list, best_checkpoint_path):
     u,v, features = get_edges(patterns,CBIR) # (u,v,f), which is tensor of from node u, to node v, edge feature f.
     CONLONs = []
     insts = []
@@ -94,6 +123,7 @@ def patterns_to_pattern_graph(patterns, CONLON,CBIR,inst_list,genre_list):
     pattern_orders = []
 
     for pattern in patterns:
+        #if pattern.inst != 'Drums': 큰 성능 향상 없음
         CONLONs.append(torch.tensor(np_tensor_decoder(pattern.CONLON)))
         insts.append(inst_list.index(pattern.inst))
         keys.append(pattern.key)
@@ -102,9 +132,10 @@ def patterns_to_pattern_graph(patterns, CONLON,CBIR,inst_list,genre_list):
         pattern_orders.append(pattern.pattern_order)
     max_order = max(pattern_orders)
     max_orders = [max_order for i in range(len(patterns))]
-    AutoEncoder = AE(hp.vq_num_hiddens, hp.vq_num_residual_layers, hp.vq_num_residual_hiddens,
-              hp.vq_embedding_dim, 6.355786)
-    checkpoint = torch.load("ae_checkpoints/ae-epoch=65-val_loss=0.10.ckpt")
+    AutoEncoder = AE(hp.AE_num_hiddens, hp.AE_num_residual_layers, hp.AE_num_residual_hiddens,
+              hp.AE_embedding_dim)
+    
+    checkpoint = torch.load(best_checkpoint_path)
     AutoEncoder.load_state_dict(checkpoint["state_dict"])
     CONLONs = torch.stack(CONLONs,dim=0).to(torch.float)
     CONLONs = AutoEncoder(CONLONs)[0]
@@ -127,7 +158,7 @@ def get_edges(patterns, CBIR):
     from_node=[]
     to_node=[]
     feature=[]
-    edges=[]#array of [from_node, to_node, feature]. feature is one hot vector.
+    #edges=[]#array of [from_node, to_node, feature]. feature is one hot vector.
 
     #edge1, edge2, edge3, edge4 = 0,0,0,0
     for i in range(len(patterns)):
@@ -279,7 +310,7 @@ def get_tensor_list(CONLON):
     conlon_full = np.moveaxis(np.array(conlon_full),0,-1)
     #print(conlon_full.shape)
 
-    num_note_per_bar = 96
+    num_note_per_bar = 48
     num_bar = conlon_full.shape[0]//num_note_per_bar
     tensor_list = np.split(conlon_full[:num_bar*num_note_per_bar], num_bar)
 
@@ -318,8 +349,9 @@ def get_json():
 def CONLON_to_patterns(whole_CONLON,inst_name, key_number, key_timing, genre ,start_timings):
     #whole_CONLON -> (# of insts, 2, time, pitch)
     patterns=[]
-    pattern_length =  96 * 4 #resolution of bar *  # of bar. Default CONLON resolution is 96.
+    pattern_length =  48 * 4 #resolution of bar *  # of bar. Default CONLON resolution is 96.
     for inst, CONLON in enumerate(whole_CONLON):
+        #if inst_name[inst] != 'Drums': # 큰 성능 향상은 없다.
         for i,start_timing in enumerate(start_timings):
             for key_idx, timings in enumerate(key_timing): # if key changes at 0, 48, 60 with C, B, C, key should be B with start timing 48 ~ 59. pattern with start timing 57~59 can include both keys, but it's rare case for this set.
                 if start_timing>=timings:

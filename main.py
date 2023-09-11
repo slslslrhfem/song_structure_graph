@@ -11,32 +11,43 @@ from graph import train_graph2vec
 from generate import generate_music, test_training_set
 from torch.utils.data import random_split
 from unet import preprocess_unet, train_unet
+from hyperparameter import Hyperparameter as hp
 import os
 os.environ['KMP_DUPLICATE_LIB_OK']='True'
 
 def main():
 
     if sys.argv[1] == 'dataset_conformity': # to remove files which has tempo change, no metadata for genre and key.
-        dataset_conformity_check("lpd_17/lpd_17_cleansed")
-
+        if hp.inst_num == 17:
+            dataset_conformity_check("lpd_17/lpd_17_cleansed")
+        else:
+            dataset_conformity_check("lpd_5/lpd_5_cleansed")
 
     if sys.argv[1] == 'process_CBIR': #data processing for training wasserstein Autoencoder for CBIR
-        image_process_CBIR_CONLON("conformed_lpd_17/lpd_17_cleansed")
+        if hp.inst_num == 17:
+            image_process_CBIR_CONLON("conformed_lpd_17/lpd_17_cleansed")
+        else:
+            image_process_CBIR_CONLON("conformed_lpd_5/lpd_5_cleansed")
 
     if sys.argv[1] == 'train_CBIR': # training wasserstein Autoencoder
         train_CBIR()
 
-    if sys.argv[1] == 'process_pattern': # data processing for training VQVAE, with pattern CONLON
-        preprocess_npz("conformed_lpd_17/lpd_17_cleansed",False)
-
-
+    if sys.argv[1] == 'process_pattern': # data processing for training AE for single track, with pattern CONLON
+        if hp.inst_num == 17:
+            preprocess_npz("conformed_lpd_17/lpd_17_cleansed",False)
+        else:
+            preprocess_npz("conformed_lpd_5/lpd_5_cleansed",False)
 
     if sys.argv[1] == 'train_AE': # training AE for pattern CONLON
         train_AE()
+    
+    if sys.argv[1] == 'preprocess_npz': # do song structure analysis and conduct song structure graph with single track AE
+        if hp.inst_num == 17:
+            preprocess_npz("conformed_lpd_17/lpd_17_cleansed",True)
+        else:
+            preprocess_npz("conformed_lpd_5/lpd_5_cleansed",True)
 
-            
-    if sys.argv[1] == 'preprocess_npz': # with wasserstein AE, do song structure analysis and conduct song structure graph
-        preprocess_npz("conformed_lpd_17/lpd_17_cleansed",True)
+    
     
     if sys.argv[1] == 'train_graph2vec':
         train_graph2vec()
