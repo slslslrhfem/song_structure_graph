@@ -1,5 +1,6 @@
 # Combinatorial Music generation model with song structure graph analysis
 
+Paper Preprint: https://arxiv.org/pdf/2312.15400v1.pdf
 
 For training from scratch...
 
@@ -47,3 +48,6 @@ and unzip it, make root as song_structure_graph/checkpoints
 ```
 
 Some progress bar updates slowly(dataset_conformity, process_CBIR, process_pattern) because of parallel processing.
+
+
+This project, which has been shared as an arXiv preprint and on GitHub, unfortunately, did not yield the expected results. Consequently, there are no plans for further submissions to conferences or journals. Please feel free to use any of the ideas or content as you wish.
