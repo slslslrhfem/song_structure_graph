@@ -8,7 +8,7 @@ For training from scratch...
 
 2. download lmd_full dataset in https://colinraffel.com/projects/lmd/, make root as song_structure_graph/dataset/lmd_full
 
-3. run following commands
+3. run following commands (Full training, Sorry for uncompleted code refactoring..) 
    
 ```
     python main.py dataset_conformity
